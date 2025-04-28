@@ -1,0 +1,28 @@
+requests
+transformers
+scikit_learn
+tqdm
+numpy
+sentencepiece
+termcolor
+datasets
+nltk
+torch
+torchvision
+torchaudio
+protobuf
+gdown
+evaluate
+num2words
+dataclasses
+textattack
+
+
+
+
+
+# gdown https://drive.google.com/uc?id=1gZPmF-Qg2m651XVlgfQAdEttSFTytuOn -O data_5.jsonl
+
+
+# gdown https://drive.google.com/uc?id=1EJA0kZOldy5bQaD9nhAkkQvhfyDljF4g -O models--ai-forever--FRED-T5-1.7B.zip && unzip models--ai-forever--FRED-T5-1.7B.zip && rm models--ai-forever--FRED-T5-1.7B.zip
+# models--ai-forever--FRED-T5-1.7B 
