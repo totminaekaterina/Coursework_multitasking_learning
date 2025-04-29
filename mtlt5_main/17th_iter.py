@@ -27,13 +27,13 @@ os.environ["HF_HOME"] = "/userspace/tev/cache/"
 os.environ["HUGGINGFACE_HUB_CACHE"] = "/userspace/tev/cache/"
 os.environ["MPLCONFIGDIR"] = "/userspace/tev/cache/"
 
-
 class FREDT5MultiTaskModel(torch.nn.Module):
     def __init__(self, model_params: dict) -> None:
         super(FREDT5MultiTaskModel, self).__init__()
         self.device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+        if self.device == torch.device("cuda:0"):
+            torch.set_default_tensor_type("torch.cuda.FloatTensor")
 
-        # Загружаем модель
         self.base_model = AutoModelForSeq2SeqLM.from_pretrained(
             model_params["MODEL"],
             torch_dtype=torch.float32,
@@ -42,9 +42,11 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         self.base_model.config.use_cache = False
         self.base_model.to(self.device)
 
+        self.loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
+
         self.tokenizer = AutoTokenizer.from_pretrained(
-            model_params["MODEL"], 
-            eos_token='</s>', 
+            model_params["MODEL"],
+            eos_token='</s>',
             pad_token='<pad>'
         )
         config = self.base_model.config
@@ -58,34 +60,31 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             split_at_layer = total_layers - 1
         self.split_at_layer = split_at_layer
 
-        self.encoder_lower = self.base_model.encoder.block[:split_at_layer]
-        self.encoder_upper = self.base_model.encoder.block[split_at_layer:]
+        self.encoder_first = self.base_model.encoder.block[:split_at_layer]
+        self.encoder_second = self.base_model.encoder.block[split_at_layer:]
 
-        # Адаптер
         d_model = config.d_model
-        self.adapter_proj = nn.Linear(d_model, d_model).to(self.device)
 
         # Головные слои (NLU)
         self.nli_head = nn.Linear(d_model, 3).to(self.device)
-        self.mc_head  = nn.Linear(d_model, 17).to(self.device)
+        self.mc_head = nn.Linear(d_model, 17).to(self.device)
         self.ner_head = nn.Linear(d_model, 29).to(self.device)
 
         # --- CHANGED FOR STS ---
-        self.sts_head = nn.Linear(d_model, 1).to(self.device)  # Выдаём скаляр (similarity score)
+        self.sts_head = nn.Linear(d_model * 2, 1).to(self.device)
 
     def forward_lower_encoder(self, input_ids, attention_mask):
         hidden_states = self.base_model.encoder.embed_tokens(input_ids)
         hidden_states = hidden_states * (self.base_model.config.d_model ** 0.5)
-        hidden_states = self.base_model.encoder.dropout(hidden_states)
 
         seq_len = hidden_states.size(1)
-        cache_position = torch.arange(seq_len, device=hidden_states.device)
+        cache_position = torch.arange(seq_len)
 
         dtype = hidden_states.dtype
         # Формируем 4D attention_mask
         attn_mask_4d = self._expand(attention_mask, dtype, tgt_len=seq_len)
 
-        for layer in self.encoder_lower:
+        for layer in self.encoder_first:
             hidden_states = layer(
                 hidden_states,
                 attention_mask=attn_mask_4d,
@@ -98,15 +97,11 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         return hidden_states
 
     def forward_upper_encoder(self, hidden_states, attention_mask):
-        hidden_states = self.adapter_proj(hidden_states)
-
         seq_len = hidden_states.size(1)
-        cache_position = torch.arange(seq_len, device=hidden_states.device)
+        cache_position = torch.arange(seq_len)
+        attn_mask_4d = self._expand(attention_mask, hidden_states.dtype, tgt_len=seq_len)
 
-        dtype = hidden_states.dtype
-        attn_mask_4d = self._expand(attention_mask, dtype, tgt_len=seq_len)
-
-        for layer in self.encoder_upper:
+        for layer in self.encoder_second:
             hidden_states = layer(
                 hidden_states,
                 attention_mask=attn_mask_4d,
@@ -115,7 +110,12 @@ class FREDT5MultiTaskModel(torch.nn.Module):
                 past_key_value=None,
                 output_attentions=False,
             )[0]
+
+        hidden_states = self.base_model.encoder.final_layer_norm(hidden_states)
+        hidden_states = self.base_model.encoder.dropout(hidden_states)
+
         return hidden_states
+
 
     def _expand(self, attn_mask, dtype, tgt_len):
         bsz, src_len = attn_mask.size()
@@ -136,16 +136,16 @@ class FREDT5MultiTaskModel(torch.nn.Module):
                 text_attention_mask=None,
                 paraphrase_input_ids=None,
                 paraphrase_attention_mask=None,
-                nli_labels=None, 
+                nli_labels=None,
                 mc_labels=None,
                 ner_labels=None):
 
         # Словарь лоссов
         loss_dict = {
-            "nli": None, 
-            "mc": None, 
-            "ner": None, 
-            "nlg": None,
+            "nli": None,
+            "mc": None,
+            "ner": None,
+            "nlg": None, # qask, qanswer, titel, paraphrase, summurisation
             "sts": None
         }
 
@@ -162,8 +162,8 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         if ner_labels is not None:
             ner_labels = ner_labels.to(self.device)
             ner_logits = self.ner_head(hidden_lower)
-            loss_fct = nn.CrossEntropyLoss(ignore_index=-100)
-            loss_ner = loss_fct(ner_logits.view(-1, ner_logits.size(-1)), ner_labels.view(-1))
+
+            loss_ner = self.loss_fct(ner_logits.view(-1, ner_logits.size(-1)), ner_labels.view(-1))
             loss_dict["ner"] = loss_ner
 
         # --- Обработка MC ---
@@ -171,8 +171,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             mc_labels = mc_labels.to(self.device)
             pooled = hidden_lower.mean(dim=1)
             mc_logits = self.mc_head(pooled)
-            loss_fct = nn.CrossEntropyLoss()
-            loss_mc = loss_fct(mc_logits, mc_labels.squeeze(-1))
+            loss_mc = self.loss_fct(mc_logits, mc_labels.squeeze(-1))
             loss_dict["mc"] = loss_mc
 
         # --- NLI и NLG ---
@@ -188,8 +187,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             nli_labels = nli_labels.to(self.device)
             pooled = hidden_upper.mean(dim=1)
             logits_nli = self.nli_head(pooled)
-            loss_fct = nn.CrossEntropyLoss()
-            loss_nli = loss_fct(logits_nli, nli_labels.squeeze(-1))
+            loss_nli = self.loss_fct(logits_nli, nli_labels.squeeze(-1))
             loss_dict["nli"] = loss_nli
 
         # --- NLG ---
@@ -249,7 +247,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             para_vec = hidden_upper_para.mean(dim=1)
             # склеиваем
             # combined = torch.cat([text_vec, para_vec], dim=1)
-            combined = text_vec + para_vec 
+            combined = text_vec + para_vec
 
             # подаём в sts_head -> скаляр
             logits_sts = self.sts_head(combined)
@@ -265,11 +263,11 @@ class FREDT5MultiTaskModel(torch.nn.Module):
 
 class T5Trainer:
     """
-    Класс обучения. 
+    Класс обучения.
     Убрано деление на stage, чтобы модель обучалась одновременно на всех задачах.
     """
     def __init__(
-        self, 
+        self,
         model: FREDT5MultiTaskModel,
         tokenizer,
         model_params: dict,
@@ -418,12 +416,12 @@ class T5Trainer:
             model_inputs = self.tokenizer(inputs, max_length=512, padding="max_length", truncation=True)
 
             mc_map = {
-                'education': 0, 'human interest': 1, 'society': 2, 'sport': 3, 
+                'education': 0, 'human interest': 1, 'society': 2, 'sport': 3,
                 'crime, law and justice': 4, 'disaster, accident and emergency incident': 5,
-                'arts, culture, entertainment and media': 6, 'politics': 7, 
+                'arts, culture, entertainment and media': 6, 'politics': 7,
                 'economy, business and finance': 8, 'lifestyle and leisure': 9,
-                'science and technology': 10, 'health': 11, 'labour': 12, 
-                'religion': 13, 'weather': 14, 'environment': 15, 
+                'science and technology': 10, 'health': 11, 'labour': 12,
+                'religion': 13, 'weather': 14, 'environment': 15,
                 'conflict, war and peace': 16
             }
             if example["mc"] not in mc_map:
@@ -1018,3 +1016,4 @@ if __name__ == "__main__":
 
     trainer.train(batch_size=8, epochs=5)
     logger.info('Обучение завершено!')
+
