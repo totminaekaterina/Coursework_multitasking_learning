@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, T5Config
 
-# Для кэша HuggingFace (опционально)
+# Для кэша HuggingFace
 os.environ["HF_HOME"] = "/userspace/tev/cache/"
 os.environ["HUGGINGFACE_HUB_CACHE"] = "/userspace/tev/cache/"
 os.environ["MPLCONFIGDIR"] = "/userspace/tev/cache/"
@@ -51,7 +51,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         if not isinstance(config, T5Config):
             raise ValueError("Ожидается T5Config.")
 
-        # Разделим энкодер на «нижние»/«верхние» (как раньше)
+        # Разделим энкодер на «нижние»/«верхние»
         total_layers = len(self.base_model.encoder.block)
         split_at_layer = 6
         if split_at_layer >= total_layers:
@@ -61,7 +61,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         self.encoder_lower = self.base_model.encoder.block[:split_at_layer]
         self.encoder_upper = self.base_model.encoder.block[split_at_layer:]
 
-        # Адаптер (необязательно)
+        # Адаптер
         d_model = config.d_model
         self.adapter_proj = nn.Linear(d_model, d_model).to(self.device)
 
@@ -74,7 +74,6 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         self.sts_head = nn.Linear(d_model, 1).to(self.device)  # Выдаём скаляр (similarity score)
 
     def forward_lower_encoder(self, input_ids, attention_mask):
-        # Аналогично вашему коду
         hidden_states = self.base_model.encoder.embed_tokens(input_ids)
         hidden_states = hidden_states * (self.base_model.config.d_model ** 0.5)
         hidden_states = self.base_model.encoder.dropout(hidden_states)
@@ -119,7 +118,6 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         return hidden_states
 
     def _expand(self, attn_mask, dtype, tgt_len):
-        # Ваш метод _expand
         bsz, src_len = attn_mask.size()
         tgt_len = tgt_len if tgt_len is not None else src_len
         attn_mask = attn_mask.to(dtype)
@@ -133,7 +131,6 @@ class FREDT5MultiTaskModel(torch.nn.Module):
                 labels=None,
                 decoder_input_ids=None,
                 task_prefix=None,
-                # --- CHANGED FOR STS ---
                 sts_labels=None,
                 text_input_ids=None,
                 text_attention_mask=None,
@@ -149,15 +146,11 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             "mc": None, 
             "ner": None, 
             "nlg": None,
-            # --- CHANGED FOR STS ---
             "sts": None
         }
 
         # 1) Нижние слои
-        # Определяем, нужна ли нам "пара" для STS, или это обычная задача
         if task_prefix == "sts":
-            # Для STS будем отдельно вызывать encoder на text_input_ids и paraphrase_input_ids
-            # НО можно сделать иначе, если хотите "сложную" задачу -> lower+upper
             pass
         else:
             # Обычная логика: lower encoder
@@ -182,7 +175,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
             loss_mc = loss_fct(mc_logits, mc_labels.squeeze(-1))
             loss_dict["mc"] = loss_mc
 
-        # --- NLI и NLG → возможно нужна upper encoder ---
+        # --- NLI и NLG ---
         is_nli = (nli_labels is not None)
         is_nlg = (task_prefix in ["title", "paraphrase", "sum", "qg", "qa"])
 
@@ -221,7 +214,7 @@ class FREDT5MultiTaskModel(torch.nn.Module):
                 encoder_hidden_states=hidden_upper,
                 encoder_attention_mask=attention_mask,
                 return_dict=True,
-                use_cache=False  # <-- на всякий случай
+                use_cache=False
             )
             seq_hidden = outputs.last_hidden_state
             lm_logits = self.base_model.lm_head(seq_hidden)
@@ -238,13 +231,11 @@ class FREDT5MultiTaskModel(torch.nn.Module):
 
         # --- CHANGED FOR STS ---
         if task_prefix == "sts" and sts_labels is not None:
-            # 1) Надо прогнать text_input_ids и paraphrase_input_ids
             text_input_ids = text_input_ids.to(self.device)
             text_attention_mask = text_attention_mask.to(self.device)
             para_input_ids = paraphrase_input_ids.to(self.device)
             para_attention_mask = paraphrase_attention_mask.to(self.device)
 
-            # Допустим, STS тоже "сложная" → будем использовать lower+upper
             # прогоняем text_input_ids через lower+upper
             hidden_lower_text = self.forward_lower_encoder(text_input_ids, text_attention_mask)
             hidden_upper_text = self.forward_upper_encoder(hidden_lower_text, text_attention_mask)
@@ -271,8 +262,6 @@ class FREDT5MultiTaskModel(torch.nn.Module):
         return loss_dict
 
 
-
-# --------------------- ТРЕЙНЕР ---------------------
 
 class T5Trainer:
     """
@@ -312,7 +301,7 @@ class T5Trainer:
         self.epochs_no_improve = 0
         self.early_stop = False
 
-        # Задаём веса для задач («больше внимания» сложным)
+        # Задаём веса для задач ("больше внимания" сложным)
         self.task_weights = {
             "ner": 1.0,
             "mc": 1.0,
@@ -322,8 +311,7 @@ class T5Trainer:
 
     def random_swap(self, words, n=1):
         """
-        Простейший пример: меняем местами n пар слов.
-        Если слов меньше 2, возвращаем без изменений.
+        Nеняем местами n пар слов. Если слов меньше 2, возвращаем без изменений.
         """
         if len(words) < 2:
             return words
@@ -334,8 +322,7 @@ class T5Trainer:
 
     def preprocess_data(self, example):
         """
-        Исходная логика формирования входов для каждой задачи.
-        Добавлен блок, который с вероятностью 15% зашумляет (swap-ауга) исходный text.
+        Добавлен блок, который с вероятностью 15% зашумляет (swap-ауга) исходный text
         """
         outputs = []
         input_text = example.get("text", "").strip()
@@ -346,7 +333,7 @@ class T5Trainer:
         # --- 15% аугментация ---
         if random.random() < 0.15:
             words = input_text.split()
-            # Один swap (можно увеличить для более сильного шума)
+            # Один swap
             words = self.random_swap(words, n=1)
             input_text = " ".join(words)
 
@@ -514,9 +501,6 @@ class T5Trainer:
         return outputs
 
     def collate_fn(self, batch):
-        """
-        Исходная логика, убраны ссылки на STS.
-        """
         # Генеративные
         gen_input_ids_list = []
         gen_attention_mask_list = []
@@ -662,8 +646,7 @@ class T5Trainer:
 
     def train(self, batch_size: int = 1, epochs: int = 3):
         """
-        Обучение без разделения на уровни/stage.
-        Просто несколько эпох на всём наборе задач (одновременное мультитаск-обучение).
+        одновременное мультитаск-обучение
         """
         train_data_processed = []
         for item in self.train_data:
@@ -692,7 +675,7 @@ class T5Trainer:
 
         average_train_loss = []
         average_val_loss   = []
-        accumulation_steps = 4  # как и в вашем коде
+        accumulation_steps = 4
 
         for epoch in range(epochs):
             self.model.train()
@@ -701,9 +684,6 @@ class T5Trainer:
 
             with tqdm(train_dataloader, desc=f"Epoch {epoch+1}/{epochs}", unit="batch") as pbar:
                 for step, batch in enumerate(pbar):
-                    # -----------------------------
-                    # Готовим счётчики подзадач:
-                    # -----------------------------
                     ptr_gen = 0   # для title, paraphrase, sum, qg, qa
                     ptr_nli = 0
                     ptr_mc  = 0
@@ -730,7 +710,7 @@ class T5Trainer:
                                 input_ids=input_ids_,
                                 attention_mask=attn_mask_,
                                 labels=labels_,
-                                task_prefix=prefix  # "title", "paraphrase", ...
+                                task_prefix=prefix
                             )
                             loss_nlg = out["nlg"]
                             if loss_nlg is not None:
@@ -792,7 +772,7 @@ class T5Trainer:
 
                             loss_sts = out["sts"]
                             if loss_sts is not None:
-                                w = 1.5  # если хотим больший вес
+                                w = 1.5
                                 total_batch_loss += w * (loss_sts / accumulation_steps)
 
                         elif prefix == "ner":
@@ -825,7 +805,7 @@ class T5Trainer:
                             self.optimizer.zero_grad()
                             torch.cuda.empty_cache()
 
-                    # Суммируем train loss (для среднего по эпохе)
+                    # Суммируем train loss
                     total_train_loss += total_batch_loss.item() * accumulation_steps
 
                     pbar.set_postfix({"Train Loss": f"{total_batch_loss.item():.4f}"})
@@ -836,7 +816,7 @@ class T5Trainer:
                 avg_train_loss = 0.0
             average_train_loss.append(avg_train_loss)
 
-            # Валидация (упрощённо, можно улучшать)
+            # Валидация
             avg_val_loss = self.validate(valid_dataloader)
             average_val_loss.append(avg_val_loss)
 
@@ -876,12 +856,10 @@ class T5Trainer:
 
         with torch.no_grad():
             for batch in dataloader:
-                # Переносим на устройство
                 for k, v in batch.items():
                     if isinstance(v, torch.Tensor):
                         batch[k] = v.to(self.device)
 
-                # Подготовка счётчиков:
                 ptr_gen = 0
                 ptr_nli = 0
                 ptr_mc  = 0
@@ -994,7 +972,6 @@ class T5Trainer:
 
 
     def _save_checkpoint(self, epoch, val_loss):
-        # Упростим, просто сохраняем всегда
         checkpoint_path = os.path.join(self.output_dir, f"epoch_{epoch+1}.pth")
         torch.save({
             'epoch': epoch+1,
@@ -1006,8 +983,6 @@ class T5Trainer:
 
 
 
-
-# --------------------- MAIN ---------------------
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -1017,7 +992,6 @@ if __name__ == "__main__":
     )
     logger = logging.getLogger(__name__)
 
-    # Пример использования
     train_data = process_multitask_dataset("data/merged_data_f_sample_1_1_out_1_f.jsonl", 1)
     valid_data = process_multitask_dataset("data/merged_data_f_sample_1_1_out_2_f.jsonl", 1)
 
@@ -1029,10 +1003,8 @@ if __name__ == "__main__":
         "LEARNING_RATE": 1e-4
     }
 
-    # Инициализация модели
-    model = FREDT5MultiTaskModel(model_params=model_params)
 
-    # Инициализация тренера
+    model = FREDT5MultiTaskModel(model_params=model_params)
     trainer = T5Trainer(
         model=model,
         tokenizer=model.tokenizer,
@@ -1044,6 +1016,5 @@ if __name__ == "__main__":
         min_delta=0.01
     )
 
-    # Запуск обучения
     trainer.train(batch_size=8, epochs=5)
     logger.info('Обучение завершено!')
