@@ -72,112 +72,89 @@ def main(
     rsglue_dir: str,
     output_dir: str
 ) -> None:
-    # ---------- подготовка ----------
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir)
-    collator  = DataCollatorWithPadding(tokenizer, padding="longest")
-    SEED, device = 42, torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    RSGLUE, SAVE_DIR = pathlib.Path(rsglue_dir), pathlib.Path(output_dir)
-    SAVE_DIR.mkdir(parents=True, exist_ok=True)
+    logger.info('tokenizer was loaded')
+    cls_data_collator = DataCollatorWithPadding(tokenizer=tokenizer, padding='longest', max_length=None)
+    logger.info('cls_data_collator was defined')
+    SEED = 42
+    RSGLUE_DIR = rsglue_dir
+    SAVE_DIR = output_dir
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    
+    # ---RCB---
+    # logger.info('RCB')
+    # rcb_raw_train = Dataset.from_json(RSGLUE_DIR + "RCB/train.jsonl")
+    # rcb_raw_test = Dataset.from_json(RSGLUE_DIR + "RCB/test.jsonl")
+    # rcb_raw_val = Dataset.from_json(RSGLUE_DIR + "RCB/val.jsonl")
+    # logger.info('RCB data was loaded')
+    # cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
+    # rcb_train = rcb_raw_train.map(
+    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    # )
+    # cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
+    # rcb_val = rcb_raw_val.map(
+    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    # )
+    # rcb_test = rcb_raw_test.map(
+    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    # )
+    # logger.info('RCB data was processed')
+    # seed_everything(SEED)
+    # model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=3)
+    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    # training_args = TrainingArguments(
+    #     output_dir=SAVE_DIR + "rcb_cp", # The output directory
+    #     overwrite_output_dir=True,
+    #     eval_strategy="epoch",
+    #     num_train_epochs=10, # number of training epochs
+    #     per_device_train_batch_size=8, # batch size for training
+    #     per_device_eval_batch_size=8,  # batch size for evaluation
+    #     learning_rate=1e-5,
+    #     save_strategy='epoch',
+    #     logging_steps = 5,
+    #     fp16=(device.type != 'cpu'),
+    #     weight_decay=0.01,
+    #     push_to_hub=False,
+    #     seed=42,
+    #     load_best_model_at_end=True,
+    #     metric_for_best_model='eval_loss',
+    #     data_seed=42,
+    #     save_total_limit=1,
+    # )
+    # trainer = Trainer(
+    #     model=model,
+    #     args=training_args,
+    #     data_collator=cls_data_collator,
+    #     train_dataset=rcb_train,
+    #     eval_dataset=rcb_val,
+    #     compute_metrics=compute_mc_accuracy,
+    #     # prediction_loss_only=True,
+    # )
+    # trainer.train()
+    # torch.cuda.empty_cache()
+    # eval_accuracy = trainer.evaluate()['eval_accuracy']
+    # logger.info(f"RCB eval accuracy is {eval_accuracy}")
 
-    # ---------- RCB датасеты ----------
-    cols = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
-    rcb_train = Dataset.from_json(RSGLUE / "RCB/train.jsonl"
-        ).map(lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols)
-    rcb_val   = Dataset.from_json(RSGLUE / "RCB/val.jsonl"
-        ).map(lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols)
-    rcb_test  = Dataset.from_json(RSGLUE / "RCB/test.jsonl"
-        ).map(lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols)
+    # # Прогнозирование на тестовых данных
+    # predictions = trainer.predict(rcb_test).predictions
+    # # Это кортеж вида (logits, some_extra_data)
 
-    # ---------- сетка гиперпараметров ----------
-    grid = {
-        "epochs":       [10, 20, 30],
-        "lr":           [1e-6, 1e-5, 2e-5, 3e-5, 1e-4],
-        "warmup_ratio": [0.02, 0.05],
-        "weight_decay": [0.0, 0.01, 0.1],
-    }
-    combos, results = list(product(*grid.values())), []
+    # logits = predictions[0]             # Берём только logits
+    # print("Logits shape ->", logits.shape)
 
-    for epochs, lr, warm, wd in combos:
-        run_name = f"ep{epochs}_lr{lr:.0e}_wu{warm}_wd{wd}"
-        run_dir  = SAVE_DIR / "rcb_grid" / run_name
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        model = AutoModelForSequenceClassification.from_pretrained(
-            model_dir, num_labels=3).to(device)
-
-        args = TrainingArguments(
-            output_dir=str(run_dir),
-            evaluation_strategy="epoch",
-            save_strategy="epoch",
-            save_total_limit=1,
-            num_train_epochs=epochs,
-            per_device_train_batch_size=8,
-            per_device_eval_batch_size=8,
-            learning_rate=lr,
-            lr_scheduler_type="linear",
-            warmup_ratio=warm,
-            weight_decay=wd,
-            fp16=(device.type != 'cpu'),
-            seed=SEED,
-            logging_steps=20,
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            report_to="none",
-        )
-
-        trainer = Trainer(
-            model=model,
-            args=args,
-            data_collator=collator,
-            train_dataset=rcb_train,
-            eval_dataset=rcb_val,
-            compute_metrics=compute_mc_accuracy,
-        )
-
-        trainer.train()
-        val = trainer.evaluate()
-        results.append({
-            "run": run_name,
-            "val_acc":  val["eval_accuracy"],
-            "val_loss": val["eval_loss"],
-            "ckpt": str(run_dir),
-            **dict(epochs=epochs, lr=lr, warmup=warm, weight_decay=wd)
-        })
-
-        del trainer, model
-        torch.cuda.empty_cache()
-
-    # ---------- выбираем лучший ----------
-    best = max(results, key=lambda x: x["val_acc"])
-    best_dir = best["ckpt"]
-    print("Best combination:", best)
-
-    # ---------- загрузка лучшего и предсказание ----------
-    best_model = AutoModelForSequenceClassification.from_pretrained(best_dir).to(device)
-    pred_args = TrainingArguments(
-        output_dir=str(SAVE_DIR / "pred_tmp"),
-        per_device_eval_batch_size=8,
-        dataloader_drop_last=False,
-        report_to="none",
-    )
-    predictor = Trainer(
-        model=best_model,
-        args=pred_args,
-        data_collator=collator,
-        compute_metrics=None,
-    )
-
-    logits = predictor.predict(rcb_test).predictions[0]   # (N, 3)
-    preds  = np.argmax(logits, axis=1)
-
-    label_map = {0: 'contradiction', 1: 'entailment', 2: 'neutral'}
-    jsonl_path = SAVE_DIR / "RCB.jsonl"
-    with open(jsonl_path, "w", encoding="utf-8") as fh:
-        for idx, p in enumerate(preds):
-            json.dump({"idx": idx, "label": label_map[p]}, fh, ensure_ascii=False)
-            fh.write("\n")
-
-    print(f"Predictions written to {jsonl_path}")
+    # # Далее argmax по нужной оси, обычно axis=1 (если logits.shape=(N, num_labels)):
+    # rcb_test_predict = np.argmax(logits, axis=1)
+    
+    # label_map_rcb = {0: 'contradiction' , 1: 'entailment', 2: 'neutral'}
+    # rcb_test_predict = [
+    #     {"idx":i, "label": label_map_rcb[rcb_test_predict[i]]} for i in range(rcb_test_predict.shape[0])
+    # ]
+    # with open(SAVE_DIR + 'RCB.jsonl', 'w') as f:
+    #     for line in rcb_test_predict:
+    #         f.write(f"{line}\n".replace("'", '"'))
+    # del rcb_test_predict
+    # del label_map_rcb
+    # logger.info('RCB Done\n')
 
 
 
@@ -574,4 +551,6 @@ if __name__ == '__main__':
     output = '/userspace/tev/cache/output/preds/'
 
     main(tokenizer_dir=tokenizer, model_dir=model, rsglue_dir=rsglue, output_dir=output)
+
+
 
