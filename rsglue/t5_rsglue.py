@@ -82,79 +82,79 @@ def main(
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     
     # ---RCB---
-    # logger.info('RCB')
-    # rcb_raw_train = Dataset.from_json(RSGLUE_DIR + "RCB/train.jsonl")
-    # rcb_raw_test = Dataset.from_json(RSGLUE_DIR + "RCB/test.jsonl")
-    # rcb_raw_val = Dataset.from_json(RSGLUE_DIR + "RCB/val.jsonl")
-    # logger.info('RCB data was loaded')
-    # cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
-    # rcb_train = rcb_raw_train.map(
-    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
-    # )
-    # cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
-    # rcb_val = rcb_raw_val.map(
-    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
-    # )
-    # rcb_test = rcb_raw_test.map(
-    #     lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
-    # )
-    # logger.info('RCB data was processed')
-    # seed_everything(SEED)
-    # model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=3)
-    # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    # training_args = TrainingArguments(
-    #     output_dir=SAVE_DIR + "rcb_cp", # The output directory
-    #     overwrite_output_dir=True,
-    #     eval_strategy="epoch",
-    #     num_train_epochs=10, # number of training epochs
-    #     per_device_train_batch_size=8, # batch size for training
-    #     per_device_eval_batch_size=8,  # batch size for evaluation
-    #     learning_rate=1e-5,
-    #     save_strategy='epoch',
-    #     logging_steps = 5,
-    #     fp16=(device.type != 'cpu'),
-    #     weight_decay=0.01,
-    #     push_to_hub=False,
-    #     seed=42,
-    #     load_best_model_at_end=True,
-    #     metric_for_best_model='eval_loss',
-    #     data_seed=42,
-    #     save_total_limit=1,
-    # )
-    # trainer = Trainer(
-    #     model=model,
-    #     args=training_args,
-    #     data_collator=cls_data_collator,
-    #     train_dataset=rcb_train,
-    #     eval_dataset=rcb_val,
-    #     compute_metrics=compute_mc_accuracy,
-    #     # prediction_loss_only=True,
-    # )
-    # trainer.train()
-    # torch.cuda.empty_cache()
-    # eval_accuracy = trainer.evaluate()['eval_accuracy']
-    # logger.info(f"RCB eval accuracy is {eval_accuracy}")
+    logger.info('RCB')
+    rcb_raw_train = Dataset.from_json(RSGLUE_DIR + "RCB/train.jsonl")
+    rcb_raw_test = Dataset.from_json(RSGLUE_DIR + "RCB/test.jsonl")
+    rcb_raw_val = Dataset.from_json(RSGLUE_DIR + "RCB/val.jsonl")
+    logger.info('RCB data was loaded')
+    cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
+    rcb_train = rcb_raw_train.map(
+        lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    )
+    cols_to_drop = ['premise', 'hypothesis', 'verb', 'genre', 'idx']
+    rcb_val = rcb_raw_val.map(
+        lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    )
+    rcb_test = rcb_raw_test.map(
+        lambda x: preprocess_rcb(x, tokenizer), remove_columns=cols_to_drop
+    )
+    logger.info('RCB data was processed')
+    seed_everything(SEED)
+    model = AutoModelForSequenceClassification.from_pretrained(model_dir, num_labels=3)
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    training_args = TrainingArguments(
+        output_dir=SAVE_DIR + "rcb_cp", # The output directory
+        overwrite_output_dir=True,
+        eval_strategy="epoch",
+        num_train_epochs=10, # number of training epochs
+        per_device_train_batch_size=8, # batch size for training
+        per_device_eval_batch_size=8,  # batch size for evaluation
+        learning_rate=1e-5,
+        save_strategy='epoch',
+        logging_steps = 5,
+        fp16=(device.type != 'cpu'),
+        weight_decay=0.01,
+        push_to_hub=False,
+        seed=42,
+        load_best_model_at_end=True,
+        metric_for_best_model='eval_loss',
+        data_seed=42,
+        save_total_limit=1,
+    )
+    trainer = Trainer(
+        model=model,
+        args=training_args,
+        data_collator=cls_data_collator,
+        train_dataset=rcb_train,
+        eval_dataset=rcb_val,
+        compute_metrics=compute_mc_accuracy,
+        # prediction_loss_only=True,
+    )
+    trainer.train()
+    torch.cuda.empty_cache()
+    eval_accuracy = trainer.evaluate()['eval_accuracy']
+    logger.info(f"RCB eval accuracy is {eval_accuracy}")
 
-    # # Прогнозирование на тестовых данных
-    # predictions = trainer.predict(rcb_test).predictions
-    # # Это кортеж вида (logits, some_extra_data)
+    # Прогнозирование на тестовых данных
+    predictions = trainer.predict(rcb_test).predictions
+    # Это кортеж вида (logits, some_extra_data)
 
-    # logits = predictions[0]             # Берём только logits
-    # print("Logits shape ->", logits.shape)
+    logits = predictions[0]             # Берём только logits
+    print("Logits shape ->", logits.shape)
 
-    # # Далее argmax по нужной оси, обычно axis=1 (если logits.shape=(N, num_labels)):
-    # rcb_test_predict = np.argmax(logits, axis=1)
+    # Далее argmax по нужной оси, обычно axis=1 (если logits.shape=(N, num_labels)):
+    rcb_test_predict = np.argmax(logits, axis=1)
     
-    # label_map_rcb = {0: 'contradiction' , 1: 'entailment', 2: 'neutral'}
-    # rcb_test_predict = [
-    #     {"idx":i, "label": label_map_rcb[rcb_test_predict[i]]} for i in range(rcb_test_predict.shape[0])
-    # ]
-    # with open(SAVE_DIR + 'RCB.jsonl', 'w') as f:
-    #     for line in rcb_test_predict:
-    #         f.write(f"{line}\n".replace("'", '"'))
-    # del rcb_test_predict
-    # del label_map_rcb
-    # logger.info('RCB Done\n')
+    label_map_rcb = {0: 'contradiction' , 1: 'entailment', 2: 'neutral'}
+    rcb_test_predict = [
+        {"idx":i, "label": label_map_rcb[rcb_test_predict[i]]} for i in range(rcb_test_predict.shape[0])
+    ]
+    with open(SAVE_DIR + 'RCB.jsonl', 'w') as f:
+        for line in rcb_test_predict:
+            f.write(f"{line}\n".replace("'", '"'))
+    del rcb_test_predict
+    del label_map_rcb
+    logger.info('RCB Done\n')
 
 
 
