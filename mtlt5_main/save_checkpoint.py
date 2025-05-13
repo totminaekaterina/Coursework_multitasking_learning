@@ -1,12 +1,30 @@
 import torch
-from transformers import AutoModelForSeq2SeqLM
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-# 1) инициализируем базовую архитектуру
-model = AutoModelForSeq2SeqLM.from_pretrained("/userspace/tev/cache/local-fredt5-model")
+BASE_DIR  = "/userspace/tev/cache/local-fredt5-model"
+CKPT_PATH = "/userspace/tev/cache/checkpoints/epoch_1bln_2.pth"
+SAVE_DIR  = "/userspace/tev/cache/checkpoints/model_1bln_2"
 
-# 2) загружаем свои веса
-state = torch.load(r"/userspace/tev/cache/output/epoch_4.pth", map_location="cuda", weights_only=True)
-model.load_state_dict(state, strict=False)
+model = AutoModelForSeq2SeqLM.from_pretrained(
+    BASE_DIR,
+    torch_dtype=torch.bfloat16,
+    use_cache=False,
+    low_cpu_mem_usage=True,
+)
 
-# 3) сохраняем в HF‑папку
-model.save_pretrained(r"/userspace/tev/cache/output/model_10k/")
+ckpt = torch.load(CKPT_PATH, map_location="cpu")
+
+state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
+missing, unexpected = model.load_state_dict(state_dict, strict=False)
+print(f"missing: {len(missing)}, unexpected: {len(unexpected)}")
+
+try:
+    model.to("cuda", dtype=torch.bfloat16)
+except RuntimeError:
+    print("bf16 не поддерживается на вашей GPU – переключаюсь на float16")
+    model.to("cuda", dtype=torch.float16)
+
+model.save_pretrained(SAVE_DIR)
+AutoTokenizer.from_pretrained(BASE_DIR, use_fast=True).save_pretrained(SAVE_DIR)
+
+print(f"Модель сохранена в {SAVE_DIR}")
