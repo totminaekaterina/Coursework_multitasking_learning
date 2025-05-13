@@ -1,9 +1,3 @@
-"""
-Стрим-обработка JSONL с батчевым inference на A100-80 GB.
-Проверено: yandex/YandexGPT-5-Lite-8B-instruct, BF16, Flash-Attention; batch ≈ 64
-"""
-
-
 import os, json, re, logging, itertools, gc
 from pathlib import Path
 from typing import Dict, List, Literal, Tuple
